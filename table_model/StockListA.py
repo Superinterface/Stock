@@ -1,4 +1,3 @@
-import datetime
 
 import db.DBUtil as dbUtil
 from sqlalchemy import Date, Table, Column, Float, DateTime, String

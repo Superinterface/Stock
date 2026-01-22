@@ -1,142 +1,74 @@
-#A股票列表
 import datetime
-from sqlalchemy import insert, delete
-from sqlalchemy.orm import sessionmaker
-
+import pandas as pd
 import akshare as ak
-
+from sqlalchemy import insert, delete
 import db.DBUtil as dbUtil
 import table_model.StockListA as stock_list
-import pandas as pd
-
-# 设置显示所有列
-pd.set_option('display.max_columns', None)
-
-# 创建Session类对象
-#Session = sessionmaker(bind=dbUtil.oracle_engine)
-# 创建Session类实例
-#session = Session()
-
-''' 上交所股票列表获取'''
-#获取上交所A股票列表
-sh = ak.stock_info_sh_name_code(symbol="主板A股")
-
-sh.rename(columns={"证券代码": "vc_symbol_code","证券简称": "vc_symbol_name","证券全称": "vc_symbol_full_name","上市日期": "vc_list_date",}, inplace=True)
-
-sh = sh.drop(columns=['公司简称','公司全称'])
-
-sh['vc_market'] = 'SH'
-sh['vc_board'] = ''
-sh['vc_industry'] = ''
-sh['vc_area'] = ''
-sh['n_total_shares'] = 0
-sh['n_float_shares'] = 0
-sh['vc_report_date'] = ''
-sh['vc_status'] = '正常上市'
-sh['vc_data_source'] = 'stock_info_sh_name_code'
-sh['vc_create_date'] = datetime.datetime.now()
-sh['vc_updated_time'] = datetime.datetime.now()
 
 
-''' 上交所股票列表落地'''
-# 先删除日期对应的旧数据，再更新
-#session.query(stock_list.stock_list_a).filter(stock_list.stock_list_a.columns.VC_SYMBOL_CODE.in_(sh['VC_SYMBOL_CODE'])).delete(synchronize_session=False)
-#session.commit()
+def sync_stock_list_a():
+    """全量更新 A 股股票列表"""
+    print("--- 正在同步股票列表 ---")
+    try:
+        # 1. 获取数据
+        sh_df = ak.stock_info_sh_name_code(symbol="主板A股")
+        sz_df = ak.stock_info_sz_name_code(symbol="A股列表")
+        bj_df = ak.stock_info_bj_name_code()
 
-delStmt = delete(stock_list.stock_list_a).where(stock_list.stock_list_a.c.vc_market == 'SH')
-with dbUtil.postgre_engine.connect() as conn:
-    conn.execute(delStmt)
-    conn.commit()
+        # 2. 格式统一化加工
+        # 上交所
+        sh_df = sh_df.rename(
+            columns={"证券代码": "vc_symbol_code", "证券简称": "vc_symbol_name", "证券全称": "vc_symbol_full_name",
+                     "上市日期": "vc_list_date"})
+        sh_df['vc_market'] = 'SH'
 
-# 插入数据
-stmt = insert(stock_list.stock_list_a)
+        # 深交所
+        sz_df = sz_df.rename(
+            columns={"A股代码": "vc_symbol_code", "A股简称": "vc_symbol_name", "A股上市日期": "vc_list_date",
+                     "板块": "vc_board", "A股总股本": "n_total_shares", "A股流通股本": "n_float_shares",
+                     "所属行业": "vc_industry"})
+        sz_df['vc_symbol_full_name'] = sz_df['vc_symbol_name']
+        sz_df['vc_market'] = 'SZ'
 
-with dbUtil.postgre_engine.connect() as conn:
-    conn.execute(stmt, sh.to_dict(orient="records"))
-    conn.commit()
+        # 北交所
+        bj_df = bj_df.rename(
+            columns={"证券代码": "vc_symbol_code", "证券简称": "vc_symbol_name", "上市日期": "vc_list_date",
+                     "板块": "vc_board", "总股本": "n_total_shares", "流通股本": "n_float_shares",
+                     "所属行业": "vc_industry", "地区": "vc_area"})
+        bj_df['vc_symbol_full_name'] = bj_df['vc_symbol_name']
+        bj_df['vc_market'] = 'BJ'
 
+        # 合并清洗
+        all_stocks = pd.concat([sh_df, sz_df, bj_df], ignore_index=True)
+        all_stocks['vc_status'] = '正常上市'
+        all_stocks['vc_create_date'] = datetime.datetime.now()
+        all_stocks['vc_updated_time'] = datetime.datetime.now()
+        all_stocks['vc_list_date'] = pd.to_datetime(all_stocks['vc_list_date']).dt.strftime('%Y-%m-%d')
 
+        # --- 重点修正部分：处理千分位逗号 ---
+        num_cols = ['n_total_shares', 'n_float_shares']
+        for col in num_cols:
+            if col in all_stocks.columns:
+                # 1. 确保是字符串类型以便使用 .str 方法
+                all_stocks[col] = all_stocks[col].astype(str)
+                # 2. 去掉逗号
+                all_stocks[col] = all_stocks[col].str.replace(',', '', regex=False)
+                # 3. 转换为浮点数（或整数），处理空值或无效值
+                all_stocks[col] = pd.to_numeric(all_stocks[col], errors='coerce').fillna(0)
 
-''' 深交所股票列表获取 '''
-sz = ak.stock_info_sz_name_code(symbol="A股列表")
-sz.rename(
-    columns={
-        "A股代码": "vc_symbol_code",
-        "A股简称": "vc_symbol_name",
-        "A股上市日期": "vc_list_date",
-        "板块": "vc_board",
-        "A股总股本": "n_total_shares",
-        "A股流通股本": "n_float_shares",
-        "所属行业": "vc_industry",
-    }, inplace=True)
+        # ----------------------------------
+        # 3. 落地数据库 (事务处理：先删后插)
+        with dbUtil.postgre_engine.connect() as conn:
+            with conn.begin():
+                conn.execute(delete(stock_list.stock_list_a))
+                conn.execute(insert(stock_list.stock_list_a), all_stocks.to_dict(orient="records"))
 
-sz['vc_symbol_full_name'] = sz['vc_symbol_name']
-sz['vc_market'] = 'SZ'
-sz['vc_area'] = ''
-sz['vc_report_date'] = ''
-sz['vc_status'] = '正常上市'
-sz['vc_data_source'] = 'stock_info_sz_name_code'
-sz['vc_create_date'] = datetime.datetime.now()
-sz['vc_updated_time'] = datetime.datetime.now()
-
-sz['vc_list_date'] = pd.to_datetime(sz['vc_list_date']).dt.date
-sz['n_total_shares'] = sz['n_total_shares'].str.replace(',', '').astype(float)
-sz['n_float_shares'] = sz['n_float_shares'].str.replace(',', '').astype(float)
-
-''' 深交所股票列表落地 '''
-# 先删除对应的旧数据，再更新
-#session.query(stock_list.stock_list_a).filter(stock_list.stock_list_a.c.VC_SYMVOL_CODE.in_(sz['VC_SYMBOL_CODE'])).delete(synchronize_session=False)
-#session.commit()
-
-delStmt = delete(stock_list.stock_list_a).where(stock_list.stock_list_a.c.vc_market == 'SZ')
-with dbUtil.postgre_engine.connect() as conn:
-    conn.execute(delStmt)
-    conn.commit()
-
-# 插入数据
-stmt = insert(stock_list.stock_list_a)
-
-with dbUtil.postgre_engine.connect() as conn:
-    conn.execute(stmt, sz.to_dict(orient="records"))
-    conn.commit()
-
-
-''' 北交所股票列表获取 '''
-bj = ak.stock_info_bj_name_code()
-bj.rename(
-    columns={
-        "证券代码": "vc_symbol_code",
-        "证券简称": "vc_symbol_name",
-        "上市日期": "vc_list_date",
-        "板块": "vc_board",
-        "总股本": "n_total_shares",
-        "流通股本": "n_float_shares",
-        "所属行业": "vc_industry",
-        "地区": "vc_area",
-        "报告日期": "vc_report_date",
-    }, inplace=True)
-
-bj['vc_symbol_full_name'] = sz['vc_symbol_name']
-bj['vc_market'] = 'BJ'
-bj['vc_board'] = ''
-bj['vc_status'] = '正常上市'
-bj['vc_data_source'] = 'stock_info_sz_name_code'
-bj['vc_create_date'] = datetime.datetime.now()
-bj['vc_updated_time'] = datetime.datetime.now()
-
-bj['vc_list_date'] = pd.to_datetime(bj['vc_list_date']).dt.date
-
-delStmt = delete(stock_list.stock_list_a).where(stock_list.stock_list_a.c.vc_market == 'BJ')
-with dbUtil.postgre_engine.connect() as conn:
-    conn.execute(delStmt)
-    conn.commit()
-
-# 插入数据
-stmt = insert(stock_list.stock_list_a)
-
-with dbUtil.postgre_engine.connect() as conn:
-    conn.execute(stmt, bj.to_dict(orient="records"))
-    conn.commit()
+        print(f"成功同步 {len(all_stocks)} 条股票列表数据")
+        return True
+    except Exception as e:
+        print(f"列表同步异常: {e}")
+        return False
 
 
-print('== stock_list_a(A股列表) 数据落地成功 ==')
+if __name__ == "__main__":
+    sync_stock_list_a()
