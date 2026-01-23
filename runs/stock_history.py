@@ -116,7 +116,7 @@ def batch_update_history():
             print("!!! 连续多次请求失败，可能已被封禁 IP，程序自动退出 !!!")
             break
 
-        time.sleep(120)  # 控制频率
+        time.sleep(300)  # 控制频率
 
 
 if __name__ == "__main__":
