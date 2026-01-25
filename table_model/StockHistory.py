@@ -18,6 +18,6 @@ stock_history = Table(
     Column("n_price_change", String),   #涨跌额(元)
     Column("n_change_hands", String),   #换手率(%)
     Column("vc_data_source", String),   #数据来源
-    Column("d_create_date", String),    #数据创建时间
+    Column("d_create_date", DateTime),    #数据创建时间
     schema='stock'
 )

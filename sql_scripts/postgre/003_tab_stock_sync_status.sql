@@ -14,3 +14,18 @@ comment on column stock_sync_status.vc_symbol is '股票代码';
 comment on column stock_sync_status.d_min_date is '最早行情日期';
 comment on column stock_sync_status.d_max_date is '最晚行情日期';
 comment on column stock_sync_status.d_last_sync_time is '最后一次成功执行抓取的时间';
+
+
+
+
+
+-- 交易日表
+create table stock_trade_date(
+	d_date date,
+	vc_is_trade integer
+)
+
+comment on table stock_trade_date is '交易日表';
+
+comment on column stock_trade_date.d_date is '日期';
+comment on column stock_trade_date.vc_is_trade is '是否是交易日(0:非交易日, 1:交易日)';
