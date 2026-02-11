@@ -201,7 +201,7 @@ def batch_update_history():
             count = count-1
             print(f">>> 待同步股票数量: {count}")
             fail_streak = 0
-            time.sleep(3)  # 频率控制
+            time.sleep(0.1)  # 频率控制
         else:
             fail_streak += 1
             print(f"  [Alert] {symbol} 全接口同步失败")
